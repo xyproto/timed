@@ -9,7 +9,7 @@ import (
 const simpleTimedWallpaperFormatVersion = "1.0"
 
 // GnomeToSimple converts a Gnome Timed Wallpaper to a Simple Timed Wallpaper
-func GnomeToSimple(gtw *Wallpaper) (*Wallpaper, error) {
+func GnomeToSimple(gtw *FatWallpaper) (*FatWallpaper, error) {
 	// TODO: Convert from struct to struct, without excercising the serializer and the parser
 
 	// Convert the given struct to the string contents of a Wallpaper file
@@ -23,7 +23,7 @@ func GnomeToSimple(gtw *Wallpaper) (*Wallpaper, error) {
 // GnomeToSimpleString converts a Gnome Timed Wallpaper to a string
 // representing a Simple Timed Wallpaper. The Path field in the given
 // struct is not included in the output string.
-func GnomeToSimpleString(gtw *Wallpaper) (string, error) {
+func GnomeToSimpleString(gtw *FatWallpaper) (string, error) {
 
 	//filename := gtw.Path
 	name := gtw.Name

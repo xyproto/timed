@@ -18,12 +18,12 @@ import (
 var setmut = &sync.RWMutex{}
 
 // UntilNext finds the duration until the next event starts
-func (stw *Wallpaper) UntilNext(et time.Time) time.Duration {
+func (fw *FatWallpaper) UntilNext(et time.Time) time.Duration {
 	var startTimes []time.Time
-	for _, t := range stw.Transitions {
+	for _, t := range fw.Transitions {
 		startTimes = append(startTimes, t.From)
 	}
-	for _, s := range stw.Statics {
+	for _, s := range fw.Statics {
 		startTimes = append(startTimes, s.At)
 	}
 	mindiff := h24
@@ -40,13 +40,13 @@ func (stw *Wallpaper) UntilNext(et time.Time) time.Duration {
 
 // NextEvent finds the next event, given a timestamp.
 // Returns an interface{} that is either a static or transition event.
-func (stw *Wallpaper) NextEvent(now time.Time) (interface{}, error) {
+func (fw *FatWallpaper) NextEvent(now time.Time) (interface{}, error) {
 	// Create a map, from timestamps to wallpaper events
 	events := make(map[time.Time]interface{})
-	for _, t := range stw.Transitions {
+	for _, t := range fw.Transitions {
 		events[t.From] = t
 	}
-	for _, s := range stw.Statics {
+	for _, s := range fw.Statics {
 		events[s.At] = s
 	}
 	if len(events) == 0 {
@@ -71,13 +71,13 @@ func (stw *Wallpaper) NextEvent(now time.Time) (interface{}, error) {
 
 // PrevEvent finds the previous event, given a timestamp.
 // Returns an interface{} that is either a static or transition event.
-func (stw *Wallpaper) PrevEvent(now time.Time) (interface{}, error) {
+func (fw *FatWallpaper) PrevEvent(now time.Time) (interface{}, error) {
 	// Create a map, from timestamps to wallpaper events
 	events := make(map[time.Time]interface{})
-	for _, t := range stw.Transitions {
+	for _, t := range fw.Transitions {
 		events[t.From] = t
 	}
-	for _, s := range stw.Statics {
+	for _, s := range fw.Statics {
 		events[s.At] = s
 	}
 	if len(events) == 0 {
@@ -111,8 +111,8 @@ func (stw *Wallpaper) PrevEvent(now time.Time) (interface{}, error) {
 }
 
 // SetInitialWallpaper will set the first wallpaper, before starting the event loop
-func (stw *Wallpaper) SetInitialWallpaper(verbose bool, setWallpaperFunc func(string) error, tempImageFilename string) error {
-	e, err := stw.PrevEvent(time.Now())
+func (fw *FatWallpaper) SetInitialWallpaper(verbose bool, setWallpaperFunc func(string) error, tempImageFilename string) error {
+	e, err := fw.PrevEvent(time.Now())
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (stw *Wallpaper) SetInitialWallpaper(verbose bool, setWallpaperFunc func(st
 		if elapsed < 0 {
 			elapsed *= -1
 		}
-		window := mod24(stw.UntilNext(s.At) - elapsed) // duration until next event start, minus time elapsed
+		window := mod24(fw.UntilNext(s.At) - elapsed) // duration until next event start, minus time elapsed
 		cooldown := window
 
 		imageFilename := s.Filename
@@ -177,7 +177,7 @@ func (stw *Wallpaper) SetInitialWallpaper(verbose bool, setWallpaperFunc func(st
 		tType := t.Type
 		tFromFilename := t.FromFilename
 		tToFilename := t.ToFilename
-		loopWait := stw.LoopWait
+		loopWait := fw.LoopWait
 		var err error
 
 		if verbose {
@@ -253,10 +253,23 @@ func (stw *Wallpaper) SetInitialWallpaper(verbose bool, setWallpaperFunc func(st
 	return nil
 }
 
-// EventLoopSimple will start the event loop for this Simple Timed Wallpaper
-func (stw *Wallpaper) EventLoopSimple(verbose bool, setWallpaperFunc func(string) error, tempImageFilename string) error {
+// EventLoop will start the event loop for this Simple Timed Wallpaper
+func (fw *FatWallpaper) EventLoop(verbose bool, setWallpaperFunc func(string) error, tempImageFilename string) error {
 	if verbose {
-		fmt.Println("Using the Simple Timed Wallpaper format.")
+		if fw.Config != nil {
+			fmt.Println("Using the GNOME Timed Wallpaper format")
+		} else {
+			fmt.Println("Using the Simple Timed Wallpaper format.")
+		}
+	}
+
+	var err error
+	initialW := fw
+	if fw.Config != nil {
+		initialW, err = GnomeToSimple(fw)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Listen for SIGHUP or SIGUSR1, to refresh the wallpaper.
@@ -272,7 +285,9 @@ func (stw *Wallpaper) EventLoopSimple(verbose bool, setWallpaperFunc func(string
 			// Launch a goroutine for setting the wallpaper
 			go func() {
 				setmut.Lock()
-				if err := stw.SetInitialWallpaper(verbose, setWallpaperFunc, tempImageFilename); err != nil {
+				// Convert to a SimpleTimedWallpaper, only for setting the initial wallpaper
+
+				if err := initialW.SetInitialWallpaper(verbose, setWallpaperFunc, tempImageFilename); err != nil {
 					fmt.Fprintln(os.Stderr, "Error:", err)
 				}
 				setmut.Unlock()
@@ -281,7 +296,7 @@ func (stw *Wallpaper) EventLoopSimple(verbose bool, setWallpaperFunc func(string
 	}()
 
 	setmut.Lock()
-	if err := stw.SetInitialWallpaper(verbose, setWallpaperFunc, tempImageFilename); err != nil {
+	if err := initialW.SetInitialWallpaper(verbose, setWallpaperFunc, tempImageFilename); err != nil {
 		setmut.Unlock()
 		return err
 	}
@@ -289,209 +304,175 @@ func (stw *Wallpaper) EventLoopSimple(verbose bool, setWallpaperFunc func(string
 
 	eventloop := event.NewLoop()
 
-	for _, s := range stw.Statics {
+	if fw.Config != nil {
+
+		// Get the start time for the wallpaper collection (which is offset by X
+		// seconds per static wallpaper)
+		startTime := fw.StartTime()
+
+		// The start time of the timed wallpaper as a whole
 		if verbose {
-			fmt.Printf("Registering static event at %s for setting %s\n", cFmt(s.At), s.Filename)
+			fmt.Println("Timed wallpaper start time:", cFmt(startTime))
 		}
 
-		// Place values into variables, before enclosing it in the function below.
-		from := s.At
-		window := mod24(stw.UntilNext(s.At)) // duration until next event start
-		cooldown := window
-		imageFilename := s.Filename
+		totalElements := len(fw.Config.Statics) + len(fw.Config.Transitions)
 
-		// Register a static event
-		eventloop.Add(event.New(from, window, cooldown, func() {
-			if verbose {
-				fmt.Printf("Triggered static wallpaper event at %s\n", cFmt(from))
-				fmt.Println("Window:", dFmt(window))
-				fmt.Println("Cooldown:", dFmt(cooldown))
-				fmt.Println("Filename:", imageFilename)
-			}
+		// Keep track of the total time. It is increased every time a new element duration is encountered.
+		eventTime := startTime
 
-			// Find the absolute path
-			absImageFilename, err := filepath.Abs(imageFilename)
-			if err == nil {
-				imageFilename = absImageFilename
-			}
+		for i := 0; i < totalElements; i++ {
+			// The duration of the event is specified in the XML file, but not when it should start
 
-			// Check that the file exists
-			if _, err := os.Stat(imageFilename); os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "File does not exist: %s\n", imageFilename)
-				return // return from anon func
-			}
-
-			// Set the desktop wallpaper, if possible
-			if verbose {
-				fmt.Printf("Setting %s.\n", imageFilename)
-			}
-			if err := setWallpaperFunc(imageFilename); err != nil {
-				fmt.Fprintf(os.Stderr, "Could not set wallpaper: %v\n", err)
-				return // return from anon func
-			}
-		}))
-	}
-	for _, t := range stw.Transitions {
-		if verbose {
-			fmt.Printf("Registering transition at %s for transitioning from %s to %s.\n", cFmt(t.From), t.FromFilename, t.ToFilename)
-		}
-
-		// cross fade steps
-		steps := 10
-
-		// Set variables
-		from := t.From
-		window := t.Duration()
-		cooldown := window / time.Duration(steps)
-		upTo := from.Add(window)
-		tType := t.Type
-		tFromFilename := t.FromFilename
-		tToFilename := t.ToFilename
-		loopWait := stw.LoopWait
-
-		// Register a transition event
-		//eventloop.Add(event.New(from, window, cooldown, event.ProgressWrapperInterval(from, upTo, loopWait, func(ratio float64) {
-		eventloop.Add(event.New(from, window, cooldown, func() {
-			progress := mod24(window - event.ToToday(upTo).Sub(event.ToToday(time.Now())))
-			ratio := float64(progress) / float64(window)
-
-			if verbose {
-				fmt.Printf("Triggered transition event at %s (%d%% complete)\n", cFmt(from), int(ratio*100))
-				fmt.Println("Progress:", dFmt(progress))
-				fmt.Println("Up to:", cFmt(upTo))
-				fmt.Println("Window:", dFmt(window))
-				fmt.Println("Cooldown:", dFmt(cooldown))
-				fmt.Println("Loop wait:", dFmt(loopWait))
-				fmt.Println("Transition type:", tType)
-				fmt.Println("From filename", tFromFilename)
-				fmt.Println("To filename", tToFilename)
-			}
-
-			if verbose {
-				fmt.Println("Crossfading between images.")
-			}
-
-			// Crossfade and write the new image to the temporary directory
-			tFromImg, err := imgio.Open(tFromFilename)
+			// Get an element, by index. This is an interface{} and is expected to be a GStatic or a GTransition
+			eInterface, err := fw.Config.Get(i)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return
+				return err
 			}
-
-			tToImg, err := imgio.Open(tToFilename)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return
-			}
-
-			// Crossfade and write the new image to the temporary directory
-			setmut.Lock()
-			blendedImage := blend.Opacity(tFromImg, tToImg, ratio)
-			err = imgio.Save(tempImageFilename, blendedImage, imgio.JPEGEncoder(100))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Could not crossfade images in transition: %v\n", err)
-				setmut.Unlock()
-				return
-			}
-			setmut.Unlock()
-
-			// Double check that the generated file exists
-			if _, err := os.Stat(tempImageFilename); os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "File does not exist: %s\n", tempImageFilename)
-				return // return from anon func
-			}
-
-			// Set the desktop wallpaper, if possible
-			if verbose {
-				fmt.Printf("Setting %s.\n", tempImageFilename)
-			}
-			setmut.Lock()
-			if err := setWallpaperFunc(tempImageFilename); err != nil {
-				setmut.Unlock()
-				fmt.Fprintf(os.Stderr, "Could not set wallpaper: %v\n", err)
-				return // return from anon func
-			}
-			setmut.Unlock()
-		}))
-	}
-
-	// Endless loop! Will wait LoopWait duration between each event loop cycle.
-	eventloop.Go(stw.LoopWait)
-	return nil
-}
-
-// EventLoop will start the event loop for this GNOME Timed Wallpaper
-func (gtw *Wallpaper) EventLoopGnome(verbose bool, setWallpaperFunc func(string) error, tempImageFilename string) error {
-	if verbose {
-		fmt.Println("Using the GNOME Timed Wallpaper format")
-	}
-
-	// Convert to a SimpleTimedWallpaper, only for setting the initial wallpaper
-	stw, err := GnomeToSimple(gtw)
-	if err != nil {
-		return err
-	}
-
-	// Listen for SIGHUP or SIGUSR1, to refresh the wallpaper.
-	// Can be used after resume from sleep.
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGHUP, syscall.SIGUSR1)
-	go func() {
-		for {
-			// Wait for a signal of the type given to signal.Notify
-			sig := <-signals
-			// Refresh the wallpaper
-			fmt.Println("Received signal", sig)
-			go func() {
-				setmut.Lock()
-				if err := stw.SetInitialWallpaper(verbose, setWallpaperFunc, tempImageFilename); err != nil {
-					fmt.Fprintln(os.Stderr, "Error:", err)
+			if s, ok := eInterface.(GStatic); ok {
+				if verbose {
+					fmt.Printf("Registering static event at %s for setting %s\n", cFmt(eventTime), s.Filename)
 				}
-				setmut.Unlock()
-			}()
+
+				// Place values into variables, before enclosing it in the function below.
+				from := eventTime
+				window := s.Duration()
+				cooldown := window
+				imageFilename := s.Filename
+
+				// Register a static event
+				eventloop.Add(event.New(from, window, cooldown, func() {
+					if verbose {
+						fmt.Printf("Triggered static wallpaper event at %s\n", cFmt(from))
+						fmt.Println("Window:", dFmt(window))
+						fmt.Println("Cooldown:", dFmt(cooldown))
+						fmt.Println("Filename:", imageFilename)
+					}
+
+					// Find the absolute path
+					absImageFilename, err := filepath.Abs(imageFilename)
+					if err == nil {
+						imageFilename = absImageFilename
+					}
+
+					// Check that the file exists
+					if _, err := os.Stat(imageFilename); os.IsNotExist(err) {
+						fmt.Fprintf(os.Stderr, "File does not exist: %s\n", imageFilename)
+						return // return from anon func
+					}
+
+					// Set the desktop wallpaper, if possible
+					if verbose {
+						fmt.Printf("Setting %s.\n", imageFilename)
+					}
+					if err := setWallpaperFunc(imageFilename); err != nil {
+						fmt.Fprintf(os.Stderr, "Could not set wallpaper: %v\n", err)
+						return // return from anon func
+					}
+				}))
+
+				// Increase the variable that keeps track of the time
+				eventTime = eventTime.Add(window)
+
+			} else if t, ok := eInterface.(GTransition); ok {
+				if verbose {
+					fmt.Printf("Registering transition at %s for transitioning from %s to %s.\n", cFmt(eventTime), t.FromFilename, t.ToFilename)
+				}
+
+				// cross fade steps
+				steps := 10
+
+				from := eventTime
+				window := t.Duration()
+				upTo := eventTime.Add(window)
+				cooldown := window / time.Duration(steps)
+				tType := t.Type
+				tFromFilename := t.FromFilename
+				tToFilename := t.ToFilename
+				loopWait := fw.LoopWait
+
+				// Register a transition event
+				eventloop.Add(event.New(from, window, cooldown, func() {
+					progress := mod24(window - event.ToToday(upTo).Sub(event.ToToday(time.Now())))
+					ratio := float64(progress) / float64(window)
+
+					if verbose {
+						fmt.Printf("Triggered transition event at %s (%d%% complete)\n", cFmt(from), int(ratio*100))
+						fmt.Println("Progress:", dFmt(progress))
+						fmt.Println("Up to:", cFmt(upTo))
+						fmt.Println("Window:", dFmt(window))
+						fmt.Println("Cooldown:", dFmt(cooldown))
+						fmt.Println("Loop wait:", dFmt(loopWait))
+						fmt.Println("Transition type:", tType)
+						fmt.Println("From filename", tFromFilename)
+						fmt.Println("To filename", tToFilename)
+					}
+
+					if verbose {
+						fmt.Println("Crossfading between images.")
+					}
+
+					// Crossfade and write the new image to the temporary directory
+					tFromImg, err := imgio.Open(tFromFilename)
+					if err != nil {
+						fmt.Fprintln(os.Stderr, err)
+						return
+					}
+
+					tToImg, err := imgio.Open(tToFilename)
+					if err != nil {
+						fmt.Fprintln(os.Stderr, err)
+						return
+					}
+
+					// Crossfade and write the new image to the temporary directory
+					setmut.Lock()
+					blendedImage := blend.Opacity(tFromImg, tToImg, ratio)
+					err = imgio.Save(tempImageFilename, blendedImage, imgio.JPEGEncoder(100))
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Could not crossfade images in transition: %v\n", err)
+						setmut.Unlock()
+						return
+					}
+					setmut.Unlock()
+
+					// Double check that the generated file exists
+					if _, err := os.Stat(tempImageFilename); os.IsNotExist(err) {
+						fmt.Fprintf(os.Stderr, "File does not exist: %s\n", tempImageFilename)
+						return // return from anon func
+					}
+
+					// Set the desktop wallpaper, if possible
+					if verbose {
+						fmt.Printf("Setting %s.\n", tempImageFilename)
+					}
+					if err := setWallpaperFunc(tempImageFilename); err != nil {
+						fmt.Fprintf(os.Stderr, "Could not set wallpaper: %v\n", err)
+						return // return from anon func
+					}
+
+				}))
+
+				// Increase the variable that keeps track of the time
+				eventTime = eventTime.Add(window)
+			} else {
+				// This should never happen, it would be an implementation error
+				panic("got an element that is not a GStatic and not a GTransition")
+			}
 		}
-	}()
 
-	setmut.Lock()
-	if err := stw.SetInitialWallpaper(verbose, setWallpaperFunc, tempImageFilename); err != nil {
-		setmut.Unlock()
-		return err
-	}
-	setmut.Unlock()
+		// Endless loop! Will wait loopWait duration between each event loop cycle.
+		eventloop.Go(fw.LoopWait)
 
-	// Start the event loop
-	eventloop := event.NewLoop()
+	} else {
 
-	// Get the start time for the wallpaper collection (which is offset by X
-	// seconds per static wallpaper)
-	startTime := gtw.StartTime()
-
-	// The start time of the timed wallpaper as a whole
-	if verbose {
-		fmt.Println("Timed wallpaper start time:", cFmt(startTime))
-	}
-
-	totalElements := len(gtw.Config.Statics) + len(gtw.Config.Transitions)
-
-	// Keep track of the total time. It is increased every time a new element duration is encountered.
-	eventTime := startTime
-
-	for i := 0; i < totalElements; i++ {
-		// The duration of the event is specified in the XML file, but not when it should start
-
-		// Get an element, by index. This is an interface{} and is expected to be a GStatic or a GTransition
-		eInterface, err := gtw.Config.Get(i)
-		if err != nil {
-			return err
-		}
-		if s, ok := eInterface.(GStatic); ok {
+		for _, s := range fw.Statics {
 			if verbose {
-				fmt.Printf("Registering static event at %s for setting %s\n", cFmt(eventTime), s.Filename)
+				fmt.Printf("Registering static event at %s for setting %s\n", cFmt(s.At), s.Filename)
 			}
 
 			// Place values into variables, before enclosing it in the function below.
-			from := eventTime
-			window := s.Duration()
+			from := s.At
+			window := mod24(fw.UntilNext(s.At)) // duration until next event start
 			cooldown := window
 			imageFilename := s.Filename
 
@@ -525,28 +506,27 @@ func (gtw *Wallpaper) EventLoopGnome(verbose bool, setWallpaperFunc func(string)
 					return // return from anon func
 				}
 			}))
-
-			// Increase the variable that keeps track of the time
-			eventTime = eventTime.Add(window)
-
-		} else if t, ok := eInterface.(GTransition); ok {
+		}
+		for _, t := range fw.Transitions {
 			if verbose {
-				fmt.Printf("Registering transition at %s for transitioning from %s to %s.\n", cFmt(eventTime), t.FromFilename, t.ToFilename)
+				fmt.Printf("Registering transition at %s for transitioning from %s to %s.\n", cFmt(t.From), t.FromFilename, t.ToFilename)
 			}
 
 			// cross fade steps
 			steps := 10
 
-			from := eventTime
+			// Set variables
+			from := t.From
 			window := t.Duration()
-			upTo := eventTime.Add(window)
 			cooldown := window / time.Duration(steps)
+			upTo := from.Add(window)
 			tType := t.Type
 			tFromFilename := t.FromFilename
 			tToFilename := t.ToFilename
-			loopWait := gtw.LoopWait
+			loopWait := fw.LoopWait
 
 			// Register a transition event
+			//eventloop.Add(event.New(from, window, cooldown, event.ProgressWrapperInterval(from, upTo, loopWait, func(ratio float64) {
 			eventloop.Add(event.New(from, window, cooldown, func() {
 				progress := mod24(window - event.ToToday(upTo).Sub(event.ToToday(time.Now())))
 				ratio := float64(progress) / float64(window)
@@ -601,23 +581,19 @@ func (gtw *Wallpaper) EventLoopGnome(verbose bool, setWallpaperFunc func(string)
 				if verbose {
 					fmt.Printf("Setting %s.\n", tempImageFilename)
 				}
+				setmut.Lock()
 				if err := setWallpaperFunc(tempImageFilename); err != nil {
+					setmut.Unlock()
 					fmt.Fprintf(os.Stderr, "Could not set wallpaper: %v\n", err)
 					return // return from anon func
 				}
-
+				setmut.Unlock()
 			}))
-
-			// Increase the variable that keeps track of the time
-			eventTime = eventTime.Add(window)
-		} else {
-			// This should never happen, it would be an implementation error
-			panic("got an element that is not a GStatic and not a GTransition")
 		}
-	}
 
-	// Endless loop! Will wait loopWait duration between each event loop cycle.
-	eventloop.Go(gtw.LoopWait)
+		// Endless loop! Will wait LoopWait duration between each event loop cycle.
+		eventloop.Go(fw.LoopWait)
+	}
 
 	return nil
 }

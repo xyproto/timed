@@ -10,115 +10,116 @@ import (
 	"time"
 )
 
-var DefaultEventLoopDelay = 5 * time.Second
+var defaultEventLoopDelay = 5 * time.Second
 
-type Wallpaper struct {
-	STWVersion  string
+// FatWallpaper contains all data for either a Simple Timed Wallpaper or a GNOME Timed Wallpaper
+type FatWallpaper struct {
+	GNOME       bool
+	Version     string
 	Name        string
 	Format      string
 	Path        string // not part of the file data, but handy when parsing
 	Statics     []*Static
 	Transitions []*Transition
 	LoopWait    time.Duration // how long the main event loop should sleep
-	// Set to nil when not a GNOME timed wallpaper
-	Config *GBackground
+	Config      *GBackground  // set to nil when not a GNOME timed wallpaper
 }
 
-func NewGnomeWallpaper(name string, path string, config *GBackground) *Wallpaper {
-	return &Wallpaper{Name: name, Path: path, Config: config, LoopWait: DefaultEventLoopDelay}
+// NewGnome creates a new Gnome Timed Wallpaper struct
+func NewGnome(name, path string, config *GBackground) *FatWallpaper {
+	return &FatWallpaper{GNOME: true, Name: name, Path: path, Config: config, LoopWait: defaultEventLoopDelay}
 }
 
-func NewSimpleTimedWallpaper(version, name, format string) *Wallpaper {
+// NewSimple creates a new Simple Timed Wallpaper struct
+func NewSimple(version, name, format string) *FatWallpaper {
 	var (
 		statics     []*Static
 		transitions []*Transition
 	)
-	return &Wallpaper{STWVersion: version, Name: name, Format: format, Path: "", Statics: statics, Transitions: transitions, LoopWait: DefaultEventLoopDelay}
+	return &FatWallpaper{GNOME: false, Version: version, Name: name, Format: format, Path: "", Statics: statics, Transitions: transitions, LoopWait: defaultEventLoopDelay}
 }
 
 // StartTime returns the timed wallpaper start time, as a time.Time
-func (w *Wallpaper) StartTime() time.Time {
-	if w.Config != nil {
-		// gtw.Config.StartTime is a struct that contains ints,
-		// where the values are directly from the parsed XML.
-		st := w.Config.StartTime
-		return time.Date(st.Year, time.Month(st.Month), st.Day, st.Hour, st.Minute, 0, 0, time.Local)
-	} else {
+func (fw *FatWallpaper) StartTime() time.Time {
+	if !fw.GNOME {
 		panic("not implemented for STW")
 	}
+	// gtw.Config.StartTime is a struct that contains ints,
+	// where the values are directly from the parsed XML.
+	st := fw.Config.StartTime
+	return time.Date(st.Year, time.Month(st.Month), st.Day, st.Hour, st.Minute, 0, 0, time.Local)
 }
 
-func (w *Wallpaper) Images() []string {
-	if w.Config != nil {
-		var filenames []string
-		for _, static := range w.Config.Statics {
-			filenames = append(filenames, static.Filename)
-		}
-		for _, transition := range w.Config.Transitions {
-			filenames = append(filenames, transition.FromFilename)
-			filenames = append(filenames, transition.ToFilename)
-		}
-		return unique(filenames)
-	} else {
+func (fw *FatWallpaper) Images() []string {
+	if !fw.GNOME {
 		// STW
 		panic("not implemented for STW")
 	}
+	var filenames []string
+	for _, static := range fw.Config.Statics {
+		filenames = append(filenames, static.Filename)
+	}
+	for _, transition := range fw.Config.Transitions {
+		filenames = append(filenames, transition.FromFilename)
+		filenames = append(filenames, transition.ToFilename)
+	}
+	return unique(filenames)
 }
 
 // String builds a string with various information about this GNOME timed wallpaper
-func (w *Wallpaper) String() string {
-	if w.Config != nil {
+func (fw *FatWallpaper) String() string {
+	if fw.GNOME {
 		var sb strings.Builder
 		sb.WriteString("path\t\t\t= ")
-		sb.WriteString(w.Path)
+		sb.WriteString(fw.Path)
 		sb.WriteString("\nstart time\t\t= ")
-		sb.WriteString(w.StartTime().String())
+		sb.WriteString(fw.StartTime().String())
 		sb.WriteString("\nnumber of static tags\t= ")
-		sb.WriteString(strconv.Itoa(len(w.Config.Statics)))
+		sb.WriteString(strconv.Itoa(len(fw.Config.Statics)))
 		sb.WriteString("\nnumber of transitions\t= ")
-		sb.WriteString(strconv.Itoa(len(w.Config.Transitions)))
+		sb.WriteString(strconv.Itoa(len(fw.Config.Transitions)))
 		sb.WriteString("\nuses these images:\n")
-		for _, filename := range w.Images() {
+		for _, filename := range fw.Images() {
 			sb.WriteString("\t" + filename + "\n")
 		}
 		return strings.TrimSpace(sb.String())
 	} else {
 		var lines []string
-		for _, s := range w.Statics {
-			lines = append(lines, s.String(w.Format))
+		for _, s := range fw.Statics {
+			lines = append(lines, s.String(fw.Format))
 		}
-		for _, t := range w.Transitions {
-			lines = append(lines, t.String(w.Format))
+		for _, t := range fw.Transitions {
+			lines = append(lines, t.String(fw.Format))
 		}
 		sort.Strings(lines)
-		return fmt.Sprintf("stw: %s\nname: %s\nformat: %s\n", w.STWVersion, w.Name, w.Format) + strings.Join(lines, "\n")
+		return fmt.Sprintf("stw: %s\nname: %s\nformat: %s\n", fw.Version, fw.Name, fw.Format) + strings.Join(lines, "\n")
 	}
 }
 
-func (w *Wallpaper) AddStatic(at time.Time, filename string) {
-	if w.Config == nil {
+func (fw *FatWallpaper) AddStatic(at time.Time, filename string) {
+	if fw.GNOME {
 		panic("not implemented for GNOME timed wallpaper")
 	}
 	var s Static
 	s.At = at
-	if len(w.Format) > 0 {
-		s.Filename = fmt.Sprintf(w.Format, filename)
+	if len(fw.Format) > 0 {
+		s.Filename = fmt.Sprintf(fw.Format, filename)
 	} else {
 		s.Filename = filename
 	}
-	w.Statics = append(w.Statics, &s)
+	fw.Statics = append(fw.Statics, &s)
 }
 
-func (w *Wallpaper) AddTransition(from, upto time.Time, fromFilename, toFilename, transitionType string) {
-	if w.Config == nil {
+func (fw *FatWallpaper) AddTransition(from, upto time.Time, fromFilename, toFilename, transitionType string) {
+	if fw.GNOME {
 		panic("not implemented for GNOME timed wallpaper")
 	}
 	var t Transition
 	t.From = from
 	t.UpTo = upto
-	if len(w.Format) > 0 {
-		t.FromFilename = fmt.Sprintf(w.Format, fromFilename)
-		t.ToFilename = fmt.Sprintf(w.Format, toFilename)
+	if len(fw.Format) > 0 {
+		t.FromFilename = fmt.Sprintf(fw.Format, fromFilename)
+		t.ToFilename = fmt.Sprintf(fw.Format, toFilename)
 	} else {
 		t.FromFilename = fromFilename
 		t.ToFilename = toFilename
@@ -128,10 +129,10 @@ func (w *Wallpaper) AddTransition(from, upto time.Time, fromFilename, toFilename
 	} else {
 		t.Type = transitionType
 	}
-	w.Transitions = append(w.Transitions, &t)
+	fw.Transitions = append(fw.Transitions, &t)
 }
 
-func ParseSTW(filename string) (*Wallpaper, error) {
+func ParseSTW(filename string) (*FatWallpaper, error) {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -142,7 +143,7 @@ func ParseSTW(filename string) (*Wallpaper, error) {
 // DataToSimple converts from the contents of a Simple Timed Wallpaper file to
 // a Wallpaper structs. The given path is used in the error messages
 // and for setting stw.Path.
-func DataToSimple(path string, data []byte) (*Wallpaper, error) {
+func DataToSimple(path string, data []byte) (*FatWallpaper, error) {
 	var ts []*Transition
 	var ss []*Static
 	parsed := make(map[string]string)
@@ -226,7 +227,7 @@ func DataToSimple(path string, data []byte) (*Wallpaper, error) {
 	name := parsed["name"]     // optional
 	format := parsed["format"] // optional
 
-	stw := NewSimpleTimedWallpaper(version, name, format)
+	stw := NewSimple(version, name, format)
 	stw.Path = path
 	for _, t := range ts {
 		// Adding transitions in a way that make sure the format string is used when interpreting the filenames
